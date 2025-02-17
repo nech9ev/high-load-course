@@ -2,17 +2,19 @@ package ru.quipy.common.utils
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import java.time.Duration
+import java.util.concurrent.ConcurrentLinkedDeque
 import java.util.concurrent.Executors
 import java.util.concurrent.PriorityBlockingQueue
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
-class SlidingWindowRateLimiter(
+class SlidingWindowRateLimiter<T>(
     private val rate: Long,
     private val window: Duration,
 ) : RateLimiter {
@@ -21,6 +23,8 @@ class SlidingWindowRateLimiter(
     private val sum = AtomicLong(0)
     private val queue = PriorityBlockingQueue<Measure>(10_000)
     private val mutex = ReentrantLock()
+
+    private val orderWaitingQueue = ConcurrentLinkedDeque<T>()
 
     override fun tick(): Boolean {
         if (sum.get() > rate) {
@@ -43,9 +47,37 @@ class SlidingWindowRateLimiter(
         }
     }
 
+    suspend fun tickValueBlocking(order: T, delayTime: kotlin.time.Duration) {
+        while (!tickValue(order)) {
+            delay(delayTime)
+        }
+    }
+
+    private fun tickValue(order: T): Boolean = when {
+        !orderWaitingQueue.contains(order) -> {
+            orderWaitingQueue.add(order)
+            false
+        }
+
+        else -> when {
+            sum.get() < rate && orderWaitingQueue.peek() == order -> {
+                mutex.withLock {
+                    val now = System.currentTimeMillis()
+                    if (sum.get() <= rate) {
+                        queue.add(Measure(1, now))
+                        sum.incrementAndGet()
+                        orderWaitingQueue.removeFirst()
+                        true
+                    } else false
+                }
+            }
+
+            else -> false
+        }
+    }
+
     data class Measure(
-        val value: Long,
-        val timestamp: Long
+        val value: Long, val timestamp: Long
     ) : Comparable<Measure> {
         override fun compareTo(other: Measure): Int {
             return timestamp.compareTo(other.timestamp)
