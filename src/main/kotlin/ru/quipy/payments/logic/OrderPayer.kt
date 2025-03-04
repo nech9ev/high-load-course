@@ -1,9 +1,8 @@
 package ru.quipy.payments.logic
 
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
@@ -13,8 +12,6 @@ import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
 import java.time.Duration
 import java.util.*
-import kotlin.time.Duration.Companion.milliseconds
-import kotlin.time.Duration.Companion.seconds
 
 @Service
 class OrderPayer {
@@ -27,37 +24,41 @@ class OrderPayer {
     @Autowired
     private lateinit var paymentService: PaymentService
 
+// PaymentAccountProperties(serviceName=onlineStore, accountName=acc-5, parallelRequests=5, rateLimitPerSec=3, price=30, averageProcessingTime=PT4.9S, enabled=false)
 //    {
-//        "serviceName": "onlineStore",
-//        "accountName": "acc-3",
-//        "parallelRequests": 30,
-//        "rateLimitPerSec": 10,
-//        "price": 30,
-//        "averageProcessingTime": "PT1S"
+//        "ratePerSecond": 2,
+//        "testCount": 100,
+//        "processingTimeMillis": 60000
 //    }
 
-    private val coroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    private val semaphore = Semaphore(permits = 5)
 
     private val slideWindow = SlidingWindowRateLimiter<Order>(
         rate = SERVICE_RATE_LIMIT_PER_SECOND,
         window = Duration.ofSeconds(1),
     )
 
-    private val checkDelayTime = 1.seconds.inWholeMilliseconds
-        .div(SERVICE_RATE_LIMIT_PER_SECOND).milliseconds.div(SPEED_CHECK_COFF)
+    private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
     fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
         val createdAt = System.currentTimeMillis()
-        coroutineScope.launch {
-            val order = Order(createdAt, paymentId)
-            slideWindow.tickValueBlocking(order, checkDelayTime)
-            val createdEvent = paymentESService.create {
-                it.create(
-                    paymentId, orderId, amount
-                )
+        scope.launch {
+            val result = withTimeoutOrNull(deadline - createdAt) {
+                semaphore.withPermit {
+                    slideWindow.tickSuspendBlocking()
+                    val createdEvent = paymentESService.create {
+                        it.create(
+                            paymentId, orderId, amount
+                        )
+                    }
+                    paymentService.submitPaymentRequest(paymentId, amount, createdAt, deadline)
+                    logger.trace("Payment {} for order {} created.", createdEvent.paymentId, orderId)
+                }
             }
-            logger.trace("Payment {} for order {} created.", createdEvent.paymentId, orderId)
-            paymentService.submitPaymentRequest(paymentId, amount, createdAt, deadline)
+            if (result == null) {
+                semaphore.release()
+            }
         }
         return createdAt
     }
@@ -69,8 +70,6 @@ class OrderPayer {
 
     private companion object {
 
-        const val SERVICE_RATE_LIMIT_PER_SECOND = 10L
-
-        const val SPEED_CHECK_COFF = 1
+        const val SERVICE_RATE_LIMIT_PER_SECOND = 3L
     }
 }

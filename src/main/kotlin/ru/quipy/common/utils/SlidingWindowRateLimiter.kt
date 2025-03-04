@@ -47,6 +47,12 @@ class SlidingWindowRateLimiter<T>(
         }
     }
 
+    suspend fun tickSuspendBlocking() {
+        while (!tick()) {
+            delay(10)
+        }
+    }
+
     suspend fun tickValueBlocking(order: T, delayTime: kotlin.time.Duration) {
         while (!tickValue(order)) {
             delay(delayTime)
