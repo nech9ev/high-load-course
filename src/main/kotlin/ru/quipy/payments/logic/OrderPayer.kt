@@ -25,11 +25,12 @@ class OrderPayer {
     private lateinit var paymentService: PaymentService
 
 // PaymentAccountProperties(serviceName=onlineStore, accountName=acc-5, parallelRequests=5, rateLimitPerSec=3, price=30, averageProcessingTime=PT4.9S, enabled=false)
-// {
-//  "ratePerSecond": 2,
-//  "testCount": 500,
-//  "processingTimeMillis": 60000
-//}
+//    {
+//        "ratePerSecond": 2,
+//        "testCount": 100,
+//        "processingTimeMillis": 60000
+//    }
+
 
     private val semaphore = Semaphore(permits = 5)
 
